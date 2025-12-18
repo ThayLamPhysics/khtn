@@ -101,7 +101,7 @@
             color: #64748b; display: flex; align-items: center; justify-content: center; cursor: pointer;
             box-shadow: 0 4px 15px rgba(0,0,0,0.05); transition: all 0.2s; z-index: 20;
         }
-        .nav-btn:hover { background: #3b82f6; color: white; border-color: #3b82f6; box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3); }
+        .nav-btn.hover { background: #3b82f6; color: white; border-color: #3b82f6; box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3); }
         .prev-btn { left: -90px; } .next-btn { right: -90px; }
         .nav-btn.hidden-btn { opacity: 0; pointer-events: none; }
 
@@ -139,7 +139,6 @@
     <script>
         // Hiển thị body (vì mặc định ẩn để tránh FOUC)
         (function() {
-            // Mặc định tên là Học viên nếu không có trong localStorage
             const studentName = localStorage.getItem('username') || 'Học viên';
             document.addEventListener('DOMContentLoaded', () => {
                  document.getElementById('mainBody').style.display = 'block';
@@ -251,13 +250,11 @@
         </div>
     </div>
 
-    <!-- External Link Modal (Fix cho lỗi không redirect được trong iframe) -->
+    <!-- External Link Modal (CẬP NHẬT: ĐÃ XÓA NÚT X THEO YÊU CẦU) -->
     <div id="externalFrameContainer" class="fixed inset-0 z-[200] hidden bg-white">
         <div class="relative w-full h-full">
             <iframe id="externalFrame" src="" class="w-full h-full border-0" allowfullscreen></iframe>
-            <button onclick="closeExternalFrame()" class="absolute top-4 right-4 w-10 h-10 bg-red-500 text-white rounded-full shadow-lg hover:bg-red-600 transition flex items-center justify-center z-50">
-                <i class="fa-solid fa-xmark"></i>
-            </button>
+            <!-- Nút đóng (X) đã được loại bỏ -->
         </div>
     </div>
 
@@ -282,6 +279,7 @@
             setTimeout(() => window.location.reload(), 500);
         }
 
+        // Không còn nút X, nhưng hàm này vẫn có thể dùng nếu cần gọi bằng code
         function closeExternalFrame() {
             const container = document.getElementById('externalFrameContainer');
             const frame = document.getElementById('externalFrame');
@@ -304,16 +302,48 @@
         
         // --- PHYSICS VARIABLES (Biến Vật Lý) ---
         let currentRotation = 0; // Góc quay hiện tại (độ)
-        let targetRotation = 0;
         let isDragging = false;
         let startX = 0;
         let lastX = 0;
-        let lastTime = 0;
         let velocity = 0;
         let animationFrameId = null;
         let selectedIndex = 0; // Logic index để tương thích code cũ
         
         let cellWidth, radius, linearSpacing;
+
+        // CẢI TIẾN VẬT LÝ: Rolling Average (Trung bình trượt)
+        let velHistory = []; // Lưu trữ lịch sử vận tốc để tính trung bình
+        const VEL_HISTORY_SIZE = 5; // Số lượng mẫu để tính trung bình
+
+        
+        // --- AUDIO & HAPTIC SYSTEM ---
+        let lastTickIndex = -1; // Theo dõi thẻ cuối cùng đã phát âm thanh
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playClickSound() {
+            if (!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(600, audioCtx.currentTime + 0.02);
+            gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.02);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.03); 
+            if (navigator.vibrate) navigator.vibrate(4); 
+        }
 
         function updateDimensions() {
             const isMobile = window.innerWidth < 640;
@@ -331,9 +361,9 @@
         function initCarousel() {
             updateDimensions();
             carousel.innerHTML = ''; 
-            // Reset transform về 0 cho sạch
             currentRotation = 0;
             velocity = 0;
+            lastTickIndex = 0; 
             updateCarouselVisuals();
 
             for (let i = 0; i < cellCount; i++) {
@@ -351,7 +381,7 @@
                 if(grade==12) { colorClass='text-indigo-600'; neonShadow='shadow-neon-indigo'; }
 
                 cell.dataset.neon = neonShadow;
-                cell.dataset.index = i; // Lưu index gốc
+                cell.dataset.index = i; 
                 cell.innerHTML = `
                     <div class="w-24 h-24 rounded-full flex items-center justify-center text-4xl font-bold mb-2 shadow-inner bg-white/60 backdrop-blur-sm border border-white/50 ${colorClass}">
                         <span>${grade}</span>
@@ -360,11 +390,9 @@
                     <span class="text-sm text-slate-500 font-medium mt-2 bg-white/50 px-3 py-1 rounded-full border border-white/40">Bấm để vào học</span>
                 `;
 
-                // Góc ban đầu của từng thẻ
                 const angle = theta * i;
                 cell.style.transform = `rotateY(${angle}deg) translateZ(${radius}px)`;
                 
-                // Click thì xoay đến thẻ đó
                 cell.onclick = () => { 
                     if (!isDragging && Math.abs(velocity) < 0.5) {
                         handleCardClick(i); 
@@ -383,12 +411,11 @@
              window.resizeTimer = setTimeout(() => { updateDimensions(); initCarousel(); }, 100);
         });
 
-        // --- HỆ THỐNG VẬT LÝ MỚI (INERTIA PHYSICS) ---
+        // --- HỆ THỐNG VẬT LÝ NÂNG CAO (INERTIA PHYSICS 2.0) ---
 
         function setupPhysicsSwipe() {
             const scene = document.querySelector('.carousel-scene');
             
-            // Mouse & Touch Events
             scene.addEventListener('mousedown', dragStart);
             scene.addEventListener('touchstart', dragStart, {passive: false});
 
@@ -400,39 +427,36 @@
         }
 
         function dragStart(e) {
-            if (e.target.closest('.nav-btn')) return; // Đừng drag khi bấm nút
+            initAudio();
+
+            if (e.target.closest('.nav-btn')) return; 
             
             isDragging = true;
-            cancelAnimationFrame(animationFrameId); // Dừng quán tính cũ
+            cancelAnimationFrame(animationFrameId); 
             
             startX = e.pageX || e.touches[0].pageX;
             lastX = startX;
-            lastTime = Date.now();
             velocity = 0;
+            velHistory = []; // Reset lịch sử vận tốc
         }
 
         function dragMove(e) {
             if (!isDragging) return;
-            e.preventDefault(); // Chặn cuộn trang khi đang vuốt carousel
+            e.preventDefault(); 
 
             const x = e.pageX || e.touches[0].pageX;
             const delta = x - lastX;
-            const now = Date.now();
-            const dt = now - lastTime;
 
-            // Độ nhạy: Chuyển đổi pixel sang độ (0.3 độ mỗi pixel)
-            const sensitivity = 0.3;
+            const sensitivity = 0.3; // Độ nhạy
             currentRotation += delta * sensitivity;
 
-            // Tính vận tốc tức thời (độ/frame)
-            if (dt > 0) {
-                // Làm mượt vận tốc bằng cách lấy trung bình động hoặc chỉ lấy mẫu mới nhất
-                velocity = (delta * sensitivity) / dt * 16; // *16 để quy về ~60fps
+            // Lưu mẫu vận tốc (độ nhạy * delta)
+            velHistory.push(delta * sensitivity);
+            if (velHistory.length > VEL_HISTORY_SIZE) {
+                velHistory.shift(); // Giữ lại N mẫu mới nhất
             }
 
             lastX = x;
-            lastTime = now;
-
             updateCarouselVisuals();
         }
 
@@ -440,54 +464,61 @@
             if (!isDragging) return;
             isDragging = false;
             
-            // Bắt đầu vòng lặp quán tính
+            // Tính vận tốc trung bình từ lịch sử (Rolling Average) để mượt hơn
+            // và tránh trường hợp ngón tay dừng lại đột ngột ở frame cuối cùng
+            if (velHistory.length > 0) {
+                const sum = velHistory.reduce((a, b) => a + b, 0);
+                velocity = sum / velHistory.length;
+            } else {
+                velocity = 0;
+            }
+            
+            // Giới hạn vận tốc tối đa để không quay quá điên cuồng
+            const MAX_VELOCITY = 40; 
+            if (velocity > MAX_VELOCITY) velocity = MAX_VELOCITY;
+            if (velocity < -MAX_VELOCITY) velocity = -MAX_VELOCITY;
+
             requestAnimationFrame(inertiaLoop);
         }
 
         function inertiaLoop() {
             if (isDragging) return;
 
-            // Ma sát (Friction): Giảm vận tốc dần dần (0.95 là trơn, 0.85 là rít)
-            velocity *= 0.95;
+            // Ma sát (Friction):
+            // Tăng lên 0.98 để trôi lâu hơn (mượt hơn), giống quán tính thật hơn
+            const friction = 0.98;
+            velocity *= friction;
 
             currentRotation += velocity;
             updateCarouselVisuals();
 
-            // Nếu vận tốc còn đáng kể thì tiếp tục loop
-            if (Math.abs(velocity) > 0.1) {
+            // Ngưỡng dừng: Thấp hơn chút để nó trôi đến tận cùng
+            if (Math.abs(velocity) > 0.05) {
                 animationFrameId = requestAnimationFrame(inertiaLoop);
             } else {
-                // Dừng hẳn và hít vào ô gần nhất (Snap)
                 snapToGrid();
             }
         }
 
         function snapToGrid() {
-            // Tìm góc chia hết cho theta gần nhất
-            // theta = 360 / 7 ~ 51.4 độ
-            // currentRotation có thể âm hoặc dương vô cùng
-            
             const nearestIndex = Math.round(currentRotation / theta);
             const targetAngle = nearestIndex * theta;
-            
-            // Hiệu ứng trượt về vị trí chuẩn (bằng CSS transition hoặc JS animate)
-            // Ở đây dùng JS animate đơn giản để đồng bộ
             animateToRotation(targetAngle);
         }
 
         function animateToRotation(target) {
             const start = currentRotation;
             const diff = target - start;
-            const duration = 400; // ms
+            const duration = 500; // Snap chậm hơn chút cho mượt
             const startTime = performance.now();
 
             function step(time) {
-                if (isDragging) return; // Nếu user chạm lại thì hủy snap
+                if (isDragging) return; 
                 
                 const elapsed = time - startTime;
                 const progress = Math.min(elapsed / duration, 1);
                 
-                // Ease out cubic
+                // Ease out cubic mượt mà hơn
                 const ease = 1 - Math.pow(1 - progress, 3);
                 
                 currentRotation = start + (diff * ease);
@@ -496,30 +527,28 @@
                 if (progress < 1) {
                     requestAnimationFrame(step);
                 } else {
-                    // Kết thúc snap, cập nhật selectedIndex logic cho các hàm khác
-                    // Lưu ý: currentRotation tăng thì xoay phải, nghĩa là index GIẢM
-                    // Index ảo = -currentRotation / theta
                     let virtualIndex = Math.round(-currentRotation / theta);
-                    // Normalize về 0..6
                     let normIndex = virtualIndex % cellCount;
                     if (normIndex < 0) normIndex += cellCount;
                     
                     selectedIndex = normIndex;
-                    updateActiveCard(); // Đảm bảo highlight chuẩn lần cuối
+                    updateActiveCard(); 
                 }
             }
             requestAnimationFrame(step);
         }
 
         function updateCarouselVisuals() {
-            // Xoay container
             carousel.style.transform = `translateZ(-${radius}px) rotateY(${currentRotation}deg)`;
-            
-            // Highlight thẻ active ngay lập tức khi xoay
             updateActiveCard();
+
+            let tickIndex = Math.round(-currentRotation / theta);
+            if (tickIndex !== lastTickIndex) {
+                playClickSound(); 
+                lastTickIndex = tickIndex;
+            }
         }
 
-        // Logic cũ để highlight (được cập nhật để dùng currentRotation)
         function updateActiveCard() {
             const cells = document.querySelectorAll('.carousel-cell');
             cells.forEach(cell => {
@@ -527,12 +556,10 @@
                 cell.classList.remove(cell.dataset.neon);
             });
 
-            // Tính index hiện tại dựa trên góc quay
             let virtualIndex = Math.round(-currentRotation / theta);
             let normIndex = virtualIndex % cellCount;
             if (normIndex < 0) normIndex += cellCount;
 
-            // Tìm thẻ có data-index khớp với normIndex
             const activeCell = document.querySelector(`.carousel-cell[data-index="${normIndex}"]`);
             if (activeCell) {
                 activeCell.classList.add('active-card');
@@ -540,98 +567,74 @@
             }
         }
 
-        // Hàm dùng cho nút bấm (thủ công)
         function manualRotate(dir) {
-            // dir = 1 (Next) => xoay trái => góc giảm => trừ theta
-            // dir = -1 (Prev) => xoay phải => góc tăng => cộng theta
+            initAudio(); 
             const targetIndex = Math.round(currentRotation / theta) - dir;
             animateToRotation(targetIndex * theta);
         }
 
-        // --- LOGIC CLICK & ANIMATION CŨ (ĐÃ ĐƯỢC GIỮ LẠI VÀ CHỈNH SỬA) ---
+        // --- LOGIC CLICK & ANIMATION CŨ ---
         
         function handleCardClick(clickedOriginalIndex) {
-            // Xác định xem thẻ được click có phải là thẻ đang active không
+            initAudio(); 
             let virtualIndex = Math.round(-currentRotation / theta);
             let currentNormIndex = virtualIndex % cellCount;
             if (currentNormIndex < 0) currentNormIndex += cellCount;
 
             if (currentNormIndex === clickedOriginalIndex) {
-                // Nếu đúng là thẻ active -> Bay vào (Zoom In)
                 wingStretchAndEnter(clickedOriginalIndex, grades[clickedOriginalIndex]);
             } else {
-                // Nếu không phải -> Xoay đến thẻ đó
-                // Tính khoảng cách ngắn nhất để xoay
                 let diff = clickedOriginalIndex - currentNormIndex;
                 if (diff > cellCount / 2) diff -= cellCount;
                 if (diff < -cellCount / 2) diff += cellCount;
                 
-                // Xoay đi (diff > 0 là cần tăng index => giảm góc)
                 const targetAngle = (virtualIndex - diff) * theta;
                 animateToRotation(targetAngle);
             }
         }
 
         function wingStretchAndEnter(centerIndex, grade) {
-            // Tắt nút
             const btns = document.querySelectorAll('.nav-btn');
             btns.forEach(b => b.classList.add('hidden-btn'));
             const cells = document.querySelectorAll('.carousel-cell');
             
-            // Đóng băng góc quay hiện tại
             const freezeAngle = currentRotation;
             carousel.style.transition = 'none'; 
             carousel.style.transform = `translateZ(-${radius}px) rotateY(${freezeAngle}deg)`;
             
-            // Xử lý từng thẻ để bung ra
             cells.forEach((cell) => {
                 const i = parseInt(cell.dataset.index);
-                // Tính góc hiện tại của thẻ này trong không gian 3D
-                // Góc thẻ = i * theta. Góc container = freezeAngle.
-                // Góc hiển thị = i*theta + freezeAngle
-                
                 let currentCellAngle = i * theta + freezeAngle;
-                // Normalize về -180..180 để tính khoảng cách cho dễ
                 while (currentCellAngle > 180) currentCellAngle -= 360;
                 while (currentCellAngle < -180) currentCellAngle += 360;
 
                 cell.style.transition = 'none';
-                // Reset transform của cell về trạng thái hiện tại
                 cell.style.transform = `rotateY(${i * theta}deg) translateZ(${radius}px)`;
             });
 
-            // Force reflow
             void carousel.offsetWidth; 
 
-            // Animation bung ra (dựa trên khoảng cách tương đối với thẻ được chọn)
             cells.forEach((cell) => {
                 const i = parseInt(cell.dataset.index);
-                // Tính khoảng cách tương đối (diff)
                 let diff = i - centerIndex;
                 if (diff > cellCount / 2) diff -= cellCount;
                 if (diff < -cellCount / 2) diff += cellCount;
 
                 const translateX = diff * linearSpacing;
                 
-                // Animation
                 cell.style.transition = 'transform 1s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 1s'; 
-                // Xoay ngược container để thẻ luôn hướng mặt ra trước khi bay
-                // Thực tế logic cũ của bạn giữ nguyên góc rotateY của thẻ, chỉ dịch chuyển X
                 cell.style.transform = `rotateY(${i * theta}deg) translateZ(${radius}px) translateX(${translateX}px)`;
                 
-                // Mờ dần các thẻ xung quanh
                 cell.style.opacity = diff === 0 ? 1 : 0; 
             });
 
             setTimeout(() => {
-                // Zoom thẻ chính
                 const activeCell = document.querySelector(`.carousel-cell[data-index="${centerIndex}"]`);
                 if(activeCell) {
                     activeCell.style.setProperty('--target-transform', activeCell.style.transform);
                     activeCell.classList.add('card-zoom-in');
                 }
                 
-                // CHUYỂN HƯỚNG / MỞ IFRAME
                 setTimeout(() => { 
                     if (grade === 12) {
                         const container = document.getElementById('externalFrameContainer');
