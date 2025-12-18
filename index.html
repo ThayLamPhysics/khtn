@@ -319,18 +319,45 @@
         // --- AUDIO & HAPTIC SYSTEM ---
         let lastTickIndex = -1; // Theo dõi thẻ cuối cùng đã phát âm thanh
         let audioCtx = null;
+        let audioUnlocked = false; // Cờ kiểm tra trạng thái unlock
 
+        // Khởi tạo AudioContext (an toàn)
         function initAudio() {
             if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
+                // Hỗ trợ cả Webkit prefix cho iOS cũ
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioCtx = new AudioContext();
             }
         }
 
+        // Hàm mở khóa âm thanh toàn cục (Global Unlock)
+        function unlockAudio() {
+            if (audioUnlocked || !audioCtx) return;
+            
+            // Nếu context đang bị treo (suspended), hãy thử resume nó
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().then(() => {
+                    audioUnlocked = true;
+                });
+            } else {
+                audioUnlocked = true;
+            }
+        }
+
+        // Gắn sự kiện unlock vào toàn bộ document để bắt cú chạm đầu tiên
+        // Chỉ chạy 1 lần duy nhất (once: true)
+        ['touchstart', 'click', 'keydown'].forEach(event => {
+            document.addEventListener(event, () => {
+                initAudio();
+                unlockAudio();
+            }, { once: true });
+        });
+
         function playClickSound() {
-            if (!audioCtx) return;
+            // Đảm bảo context tồn tại và đã được resume
+            if (!audioCtx) initAudio();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
             const osc = audioCtx.createOscillator();
             const gain = audioCtx.createGain();
             osc.type = 'triangle';
@@ -427,8 +454,8 @@
         }
 
         function dragStart(e) {
-            initAudio();
-
+            // Không cần initAudio ở đây nữa vì đã có Global Unlock
+            
             if (e.target.closest('.nav-btn')) return; 
             
             isDragging = true;
@@ -568,6 +595,7 @@
         }
 
         function manualRotate(dir) {
+            // Vẫn initAudio khi bấm nút cho chắc
             initAudio(); 
             const targetIndex = Math.round(currentRotation / theta) - dir;
             animateToRotation(targetIndex * theta);
