@@ -79,7 +79,7 @@
 
         /* 3D Carousel CSS */
         .carousel-scene { margin: 40px auto; position: relative; width: 340px; height: 420px; perspective: 2500px; touch-action: pan-y; z-index: 10; }
-        .carousel { width: 100%; height: 100%; position: absolute; transform-style: preserve-3d; transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
+        .carousel { width: 100%; height: 100%; position: absolute; transform-style: preserve-3d; } /* Bỏ transition mặc định để JS control mượt hơn */
         .carousel-cell {
             position: absolute; width: 320px; height: 400px; left: 10px; top: 10px;
             background: rgba(255, 255, 255, 0.65); border-radius: 30px; border: 1px solid rgba(255, 255, 255, 0.8);
@@ -88,6 +88,8 @@
             font-size: 24px; font-weight: bold; color: #334155; cursor: pointer;
             transition: transform 0.6s, opacity 0.6s, border-color 0.3s, box-shadow 0.3s, background 0.3s;
             opacity: 0.5; transform-origin: center center;
+            /* Ngăn chặn chọn văn bản khi vuốt */
+            user-select: none; -webkit-user-select: none;
         }
         .carousel-cell.active-card {
             opacity: 1; transform: scale(1.05) translateZ(30px); background: rgba(255, 255, 255, 0.85); 
@@ -112,7 +114,6 @@
 
         /* Mobile Responsive */
         @media (max-width: 640px) {
-            /* Đã điều chỉnh chiều cao thành 100vh vì không còn navbar */
             main { height: 100vh !important; display: flex !important; flex-direction: column; overflow: visible !important; }
             #homeView { height: 100%; display: flex; flex-direction: column; justify-content: flex-start; align-items: center; width: 100%; }
             #carouselContainer { flex-grow: 1; width: 100%; display: flex !important; flex-direction: column; justify-content: center; align-items: center; padding-bottom: 40px; position: relative; overflow: visible !important; }
@@ -177,8 +178,9 @@
                 </div>
                 <div class="carousel-scene">
                     <div class="carousel" id="gradeCarousel"></div>
-                    <button class="nav-btn prev-btn" onclick="rotateCarousel(-1)"><i class="fa-solid fa-chevron-left"></i></button>
-                    <button class="nav-btn next-btn" onclick="rotateCarousel(1)"><i class="fa-solid fa-chevron-right"></i></button>
+                    <!-- Nút bấm vẫn giữ để dùng trên PC -->
+                    <button class="nav-btn prev-btn" onclick="manualRotate(-1)"><i class="fa-solid fa-chevron-left"></i></button>
+                    <button class="nav-btn next-btn" onclick="manualRotate(1)"><i class="fa-solid fa-chevron-right"></i></button>
                 </div>
             </div>
         </div>
@@ -280,18 +282,14 @@
             setTimeout(() => window.location.reload(), 500);
         }
 
-        // --- HÀM XỬ LÝ IFRAME NGOÀI ---
         function closeExternalFrame() {
             const container = document.getElementById('externalFrameContainer');
             const frame = document.getElementById('externalFrame');
             container.classList.add('hidden');
-            frame.src = ''; // Xóa src để dừng tải/phát nội dung
-            
-            // Quay lại trạng thái Home và reset hiệu ứng
+            frame.src = ''; 
             triggerGoHome();
         }
 
-        // ... [Giữ nguyên logic Carousel, Search và Render Lessons của bạn] ...
         const database = [
             { id: 1, title: "Bài 1: Đo độ dài", grade: 6, subject: "ly", icon: "fa-ruler", desc: "Lý thuyết về đơn vị đo và dụng cụ đo.", link: "lessons/bai_1/bai_hoc.html" },
             { id: 2, title: "Bài 2: Các thể của chất", grade: 6, subject: "hoa", icon: "fa-cube", desc: "Rắn, lỏng, khí và sự chuyển thể.", link: "lessons/bai_2/bai_hoc.html" },
@@ -301,9 +299,19 @@
 
         const grades = [6, 7, 8, 9, 10, 11, 12];
         const carousel = document.getElementById('gradeCarousel');
-        let selectedIndex = 0;
         const cellCount = 7;
         const theta = 360 / cellCount;
+        
+        // --- PHYSICS VARIABLES (Biến Vật Lý) ---
+        let currentRotation = 0; // Góc quay hiện tại (độ)
+        let targetRotation = 0;
+        let isDragging = false;
+        let startX = 0;
+        let lastX = 0;
+        let lastTime = 0;
+        let velocity = 0;
+        let animationFrameId = null;
+        let selectedIndex = 0; // Logic index để tương thích code cũ
         
         let cellWidth, radius, linearSpacing;
 
@@ -323,8 +331,10 @@
         function initCarousel() {
             updateDimensions();
             carousel.innerHTML = ''; 
-            carousel.style.transition = 'transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1)';
-            carousel.style.transform = ''; 
+            // Reset transform về 0 cho sạch
+            currentRotation = 0;
+            velocity = 0;
+            updateCarouselVisuals();
 
             for (let i = 0; i < cellCount; i++) {
                 const grade = grades[i];
@@ -341,6 +351,7 @@
                 if(grade==12) { colorClass='text-indigo-600'; neonShadow='shadow-neon-indigo'; }
 
                 cell.dataset.neon = neonShadow;
+                cell.dataset.index = i; // Lưu index gốc
                 cell.innerHTML = `
                     <div class="w-24 h-24 rounded-full flex items-center justify-center text-4xl font-bold mb-2 shadow-inner bg-white/60 backdrop-blur-sm border border-white/50 ${colorClass}">
                         <span>${grade}</span>
@@ -349,15 +360,22 @@
                     <span class="text-sm text-slate-500 font-medium mt-2 bg-white/50 px-3 py-1 rounded-full border border-white/40">Bấm để vào học</span>
                 `;
 
+                // Góc ban đầu của từng thẻ
                 const angle = theta * i;
                 cell.style.transform = `rotateY(${angle}deg) translateZ(${radius}px)`;
                 
-                cell.onclick = () => { handleCardClick(i); };
+                // Click thì xoay đến thẻ đó
+                cell.onclick = () => { 
+                    if (!isDragging && Math.abs(velocity) < 0.5) {
+                        handleCardClick(i); 
+                    }
+                };
                 carousel.appendChild(cell);
             }
-            rotateCarousel(); 
-            setupSwipe();
+            
+            setupPhysicsSwipe();
             document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('hidden-btn'));
+            updateActiveCard();
         }
 
         window.addEventListener('resize', () => {
@@ -365,115 +383,266 @@
              window.resizeTimer = setTimeout(() => { updateDimensions(); initCarousel(); }, 100);
         });
 
-        function setupSwipe() {
-            const carouselScene = document.querySelector('.carousel-scene');
-            let touchStartX = 0;
-            let touchEndX = 0;
-            carouselScene.addEventListener('touchstart', (e) => touchStartX = e.changedTouches[0].screenX, {passive: true});
-            carouselScene.addEventListener('touchend', (e) => {
-                touchEndX = e.changedTouches[0].screenX;
-                if (Math.abs(touchStartX - touchEndX) > 40) rotateCarousel(touchStartX > touchEndX ? 1 : -1);
-            }, {passive: true});
+        // --- HỆ THỐNG VẬT LÝ MỚI (INERTIA PHYSICS) ---
+
+        function setupPhysicsSwipe() {
+            const scene = document.querySelector('.carousel-scene');
+            
+            // Mouse & Touch Events
+            scene.addEventListener('mousedown', dragStart);
+            scene.addEventListener('touchstart', dragStart, {passive: false});
+
+            window.addEventListener('mousemove', dragMove);
+            window.addEventListener('touchmove', dragMove, {passive: false});
+
+            window.addEventListener('mouseup', dragEnd);
+            window.addEventListener('touchend', dragEnd);
         }
 
-        function rotateCarousel(direction = 0) {
-            selectedIndex += direction;
-            const angle = theta * selectedIndex * -1;
-            carousel.style.transform = `translateZ(-${radius}px) rotateY(${angle}deg)`;
+        function dragStart(e) {
+            if (e.target.closest('.nav-btn')) return; // Đừng drag khi bấm nút
+            
+            isDragging = true;
+            cancelAnimationFrame(animationFrameId); // Dừng quán tính cũ
+            
+            startX = e.pageX || e.touches[0].pageX;
+            lastX = startX;
+            lastTime = Date.now();
+            velocity = 0;
+        }
+
+        function dragMove(e) {
+            if (!isDragging) return;
+            e.preventDefault(); // Chặn cuộn trang khi đang vuốt carousel
+
+            const x = e.pageX || e.touches[0].pageX;
+            const delta = x - lastX;
+            const now = Date.now();
+            const dt = now - lastTime;
+
+            // Độ nhạy: Chuyển đổi pixel sang độ (0.3 độ mỗi pixel)
+            const sensitivity = 0.3;
+            currentRotation += delta * sensitivity;
+
+            // Tính vận tốc tức thời (độ/frame)
+            if (dt > 0) {
+                // Làm mượt vận tốc bằng cách lấy trung bình động hoặc chỉ lấy mẫu mới nhất
+                velocity = (delta * sensitivity) / dt * 16; // *16 để quy về ~60fps
+            }
+
+            lastX = x;
+            lastTime = now;
+
+            updateCarouselVisuals();
+        }
+
+        function dragEnd(e) {
+            if (!isDragging) return;
+            isDragging = false;
+            
+            // Bắt đầu vòng lặp quán tính
+            requestAnimationFrame(inertiaLoop);
+        }
+
+        function inertiaLoop() {
+            if (isDragging) return;
+
+            // Ma sát (Friction): Giảm vận tốc dần dần (0.95 là trơn, 0.85 là rít)
+            velocity *= 0.95;
+
+            currentRotation += velocity;
+            updateCarouselVisuals();
+
+            // Nếu vận tốc còn đáng kể thì tiếp tục loop
+            if (Math.abs(velocity) > 0.1) {
+                animationFrameId = requestAnimationFrame(inertiaLoop);
+            } else {
+                // Dừng hẳn và hít vào ô gần nhất (Snap)
+                snapToGrid();
+            }
+        }
+
+        function snapToGrid() {
+            // Tìm góc chia hết cho theta gần nhất
+            // theta = 360 / 7 ~ 51.4 độ
+            // currentRotation có thể âm hoặc dương vô cùng
+            
+            const nearestIndex = Math.round(currentRotation / theta);
+            const targetAngle = nearestIndex * theta;
+            
+            // Hiệu ứng trượt về vị trí chuẩn (bằng CSS transition hoặc JS animate)
+            // Ở đây dùng JS animate đơn giản để đồng bộ
+            animateToRotation(targetAngle);
+        }
+
+        function animateToRotation(target) {
+            const start = currentRotation;
+            const diff = target - start;
+            const duration = 400; // ms
+            const startTime = performance.now();
+
+            function step(time) {
+                if (isDragging) return; // Nếu user chạm lại thì hủy snap
+                
+                const elapsed = time - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                
+                // Ease out cubic
+                const ease = 1 - Math.pow(1 - progress, 3);
+                
+                currentRotation = start + (diff * ease);
+                updateCarouselVisuals();
+
+                if (progress < 1) {
+                    requestAnimationFrame(step);
+                } else {
+                    // Kết thúc snap, cập nhật selectedIndex logic cho các hàm khác
+                    // Lưu ý: currentRotation tăng thì xoay phải, nghĩa là index GIẢM
+                    // Index ảo = -currentRotation / theta
+                    let virtualIndex = Math.round(-currentRotation / theta);
+                    // Normalize về 0..6
+                    let normIndex = virtualIndex % cellCount;
+                    if (normIndex < 0) normIndex += cellCount;
+                    
+                    selectedIndex = normIndex;
+                    updateActiveCard(); // Đảm bảo highlight chuẩn lần cuối
+                }
+            }
+            requestAnimationFrame(step);
+        }
+
+        function updateCarouselVisuals() {
+            // Xoay container
+            carousel.style.transform = `translateZ(-${radius}px) rotateY(${currentRotation}deg)`;
+            
+            // Highlight thẻ active ngay lập tức khi xoay
             updateActiveCard();
         }
 
+        // Logic cũ để highlight (được cập nhật để dùng currentRotation)
         function updateActiveCard() {
             const cells = document.querySelectorAll('.carousel-cell');
             cells.forEach(cell => {
                 cell.classList.remove('active-card');
                 cell.classList.remove(cell.dataset.neon);
             });
-            let normalizedIndex = selectedIndex % cellCount;
-            if (normalizedIndex < 0) normalizedIndex += cellCount;
-            
-            if(cells[normalizedIndex]) {
-                const activeCell = cells[normalizedIndex];
+
+            // Tính index hiện tại dựa trên góc quay
+            let virtualIndex = Math.round(-currentRotation / theta);
+            let normIndex = virtualIndex % cellCount;
+            if (normIndex < 0) normIndex += cellCount;
+
+            // Tìm thẻ có data-index khớp với normIndex
+            const activeCell = document.querySelector(`.carousel-cell[data-index="${normIndex}"]`);
+            if (activeCell) {
                 activeCell.classList.add('active-card');
                 activeCell.classList.add(activeCell.dataset.neon);
             }
         }
 
-        function handleCardClick(clickedIndex) {
-            let currentIndex = selectedIndex % cellCount;
-            if (currentIndex < 0) currentIndex += cellCount;
-            if (currentIndex === clickedIndex) {
-                wingStretchAndEnter(clickedIndex, grades[clickedIndex]);
+        // Hàm dùng cho nút bấm (thủ công)
+        function manualRotate(dir) {
+            // dir = 1 (Next) => xoay trái => góc giảm => trừ theta
+            // dir = -1 (Prev) => xoay phải => góc tăng => cộng theta
+            const targetIndex = Math.round(currentRotation / theta) - dir;
+            animateToRotation(targetIndex * theta);
+        }
+
+        // --- LOGIC CLICK & ANIMATION CŨ (ĐÃ ĐƯỢC GIỮ LẠI VÀ CHỈNH SỬA) ---
+        
+        function handleCardClick(clickedOriginalIndex) {
+            // Xác định xem thẻ được click có phải là thẻ đang active không
+            let virtualIndex = Math.round(-currentRotation / theta);
+            let currentNormIndex = virtualIndex % cellCount;
+            if (currentNormIndex < 0) currentNormIndex += cellCount;
+
+            if (currentNormIndex === clickedOriginalIndex) {
+                // Nếu đúng là thẻ active -> Bay vào (Zoom In)
+                wingStretchAndEnter(clickedOriginalIndex, grades[clickedOriginalIndex]);
             } else {
-                let diff = clickedIndex - currentIndex;
+                // Nếu không phải -> Xoay đến thẻ đó
+                // Tính khoảng cách ngắn nhất để xoay
+                let diff = clickedOriginalIndex - currentNormIndex;
                 if (diff > cellCount / 2) diff -= cellCount;
                 if (diff < -cellCount / 2) diff += cellCount;
-                selectedIndex += diff;
-                rotateCarousel();
+                
+                // Xoay đi (diff > 0 là cần tăng index => giảm góc)
+                const targetAngle = (virtualIndex - diff) * theta;
+                animateToRotation(targetAngle);
             }
         }
 
         function wingStretchAndEnter(centerIndex, grade) {
+            // Tắt nút
             const btns = document.querySelectorAll('.nav-btn');
             btns.forEach(b => b.classList.add('hidden-btn'));
             const cells = document.querySelectorAll('.carousel-cell');
             
-            const currentContainerAngle = theta * selectedIndex * -1;
+            // Đóng băng góc quay hiện tại
+            const freezeAngle = currentRotation;
             carousel.style.transition = 'none'; 
-            carousel.style.transform = `translateZ(-${radius}px) rotateY(${currentContainerAngle}deg)`;
+            carousel.style.transform = `translateZ(-${radius}px) rotateY(${freezeAngle}deg)`;
             
-            cells.forEach((cell, i) => {
-                let currentAngle = theta * i;
-                const targetAngle = -currentContainerAngle; 
-                let delta = currentAngle - targetAngle;
-                while (delta > 180) { currentAngle -= 360; delta -= 360; }
-                while (delta < -180) { currentAngle += 360; delta += 360; }
+            // Xử lý từng thẻ để bung ra
+            cells.forEach((cell) => {
+                const i = parseInt(cell.dataset.index);
+                // Tính góc hiện tại của thẻ này trong không gian 3D
+                // Góc thẻ = i * theta. Góc container = freezeAngle.
+                // Góc hiển thị = i*theta + freezeAngle
+                
+                let currentCellAngle = i * theta + freezeAngle;
+                // Normalize về -180..180 để tính khoảng cách cho dễ
+                while (currentCellAngle > 180) currentCellAngle -= 360;
+                while (currentCellAngle < -180) currentCellAngle += 360;
+
                 cell.style.transition = 'none';
-                cell.style.transform = `rotateY(${currentAngle}deg) translateZ(${radius}px)`;
+                // Reset transform của cell về trạng thái hiện tại
+                cell.style.transform = `rotateY(${i * theta}deg) translateZ(${radius}px)`;
             });
 
+            // Force reflow
             void carousel.offsetWidth; 
 
-            cells.forEach((cell, i) => {
+            // Animation bung ra (dựa trên khoảng cách tương đối với thẻ được chọn)
+            cells.forEach((cell) => {
+                const i = parseInt(cell.dataset.index);
+                // Tính khoảng cách tương đối (diff)
                 let diff = i - centerIndex;
                 if (diff > cellCount / 2) diff -= cellCount;
                 if (diff < -cellCount / 2) diff += cellCount;
+
                 const translateX = diff * linearSpacing;
+                
+                // Animation
                 cell.style.transition = 'transform 1s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 1s'; 
-                cell.style.transform = `rotateY(${-currentContainerAngle}deg) translateX(${translateX}px) translateZ(${radius}px)`;
-                cell.style.opacity = diff === 0 ? 1 : 0.3; 
+                // Xoay ngược container để thẻ luôn hướng mặt ra trước khi bay
+                // Thực tế logic cũ của bạn giữ nguyên góc rotateY của thẻ, chỉ dịch chuyển X
+                cell.style.transform = `rotateY(${i * theta}deg) translateZ(${radius}px) translateX(${translateX}px)`;
+                
+                // Mờ dần các thẻ xung quanh
+                cell.style.opacity = diff === 0 ? 1 : 0; 
             });
 
             setTimeout(() => {
-                cells.forEach((cell, i) => {
-                    let diff = i - centerIndex;
-                    while (diff > cellCount / 2) diff -= cellCount;
-                    while (diff < -cellCount / 2) diff += cellCount;
-                    cell.style.transition = ''; 
-                    if (diff === 0) {
-                        cell.style.setProperty('--target-transform', cell.style.transform);
-                        cell.classList.add('card-zoom-in');
-                    } else if (diff < 0) {
-                        cell.classList.add('card-slide-left');
-                    } else {
-                        cell.classList.add('card-slide-right');
-                    }
-                });
+                // Zoom thẻ chính
+                const activeCell = document.querySelector(`.carousel-cell[data-index="${centerIndex}"]`);
+                if(activeCell) {
+                    activeCell.style.setProperty('--target-transform', activeCell.style.transform);
+                    activeCell.classList.add('card-zoom-in');
+                }
                 
-                // --- CHỈNH SỬA LOGIC CHUYỂN HƯỚNG BẰNG IFRAME ---
+                // CHUYỂN HƯỚNG / MỞ IFRAME
                 setTimeout(() => { 
                     if (grade === 12) {
-                        // Mở iframe nội bộ thay vì redirect toàn trang
                         const container = document.getElementById('externalFrameContainer');
                         const frame = document.getElementById('externalFrame');
                         frame.src = 'https://testphy12-20251218.netlify.app/';
                         container.classList.remove('hidden');
                     } else {
-                        // Các lớp khác vào danh sách bài học bình thường
                         selectGrade(grade); 
                     }
                 }, 800); 
-            }, 1000); 
+            }, 800); 
         }
 
         function resetCarouselVisuals() { initCarousel(); }
